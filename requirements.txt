@@ -10,3 +10,4 @@ langchain-community==0.0.38
 langsmith==0.1.17
 scikit-learn
 category_encoders
+scipy>=1.10.0,<1.11.0
