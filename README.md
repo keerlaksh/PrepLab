@@ -18,3 +18,6 @@ This project is a **LangGraph-based, LLM-assisted data preprocessing pipeline**,
 - 🤖 All preprocessing steps are guided by **LLM prompts**
 - 📈 Generates boxplots before and after outlier removal
 - 💾 Option to download generated preprocessing code
+
+to run:
+streamlit run app.py
