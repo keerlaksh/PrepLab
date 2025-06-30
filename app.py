@@ -63,12 +63,15 @@ def define_problem(state: DataState) -> DataState:
     csv_description = df.describe(include='all').to_string()
     sample_rows = df.head().to_string()
     prompt = f"""
-You are a machine learning expert. Analyze the following CSV file deeply and provide the following:
+You are a senior data scientist. Analyze the following dataset and provide a comprehensive project brief.
 
-1. A brief project objective and desired outcomes
-2. The appropriate machine learning task (e.g., regression, classification) and why
-3. A suitable target column (if possible)
-4. Key insights from the data (distributions, data types, anomalies)
+Instructions:
+- Summarize the dataset's purpose, context, and potential business value.
+- Identify the most appropriate machine learning task (classification, regression, clustering, etc.) and justify your choice.
+- Suggest the best target column for prediction, with reasoning.
+- List at least 3 key insights about the data (e.g., class imbalance, outliers, missing values, data types, anomalies, or relationships).
+- If you see any data quality issues, mention them.
+- If the dataset is not suitable for ML, explain why.
 
 Return your output in this Python dictionary format:
 {{
@@ -113,6 +116,10 @@ Return your output in this Python dictionary format:
         "changes_made": "Initial data loaded and analyzed",
         "code": cumulative_code
     }
+    
+    df = make_arrow_compatible(df)
+    state["df"] = df
+    state["current_df"] = df
     
     return state
 
@@ -163,6 +170,10 @@ cat_unique = df[cat_col].nunique()
         "code": cumulative_code
     }
     
+    df = make_arrow_compatible(df)
+    state["df"] = df
+    state["current_df"] = df
+    
     return state
 
 # ➂ Data Cleaning Node
@@ -176,21 +187,16 @@ def clean_columns(state: DataState) -> DataState:
     csv_description = df.describe(include='all').to_string()
     sample_rows = df.head().to_string()
     prompt = f"""
-You are a data scientist working on a machine learning project.
+You are a data scientist preparing data for a real-world ML project.
 
-Goal: Predict `{target_column}`.
-Context: {problem_summary}
+Instructions:
+- Review the dataset structure and the project goal: Predict `{target_column}`.
+- For each column, decide if it should be dropped or kept, and provide a clear, concise reason.
+- Consider: data leakage, high missingness, constant values, ID columns, irrelevant features, and columns with too many unique values.
+- If a column is borderline, explain your reasoning.
+- If you recommend dropping a column, be specific about why (e.g., "leakage", "ID", "too many missing", "constant", "irrelevant", etc.).
 
-Duplicate observations most frequently arise during data collection and irrelevant observations are those that don't actually fit with the specific problem that we're trying to solve.
-
-Redundant observations alter the efficiency and may produce misleading results.
-
-Now, based on this goal and the structure of the dataset, identify:
-- Columns to drop and reasons
-- Columns to keep and reasons
-
-Return Python dict like:
-```python
+Return a Python dict like:
 {{
   "drop": {{
     "col1": "reason",
@@ -201,6 +207,7 @@ Return Python dict like:
     "col4": "reason"
   }}
 }}
+
 === CSV DESCRIPTION ===
 {csv_description}
 
@@ -255,6 +262,10 @@ df_cleaned = df.drop(columns={drop_cols}, errors='ignore')
         "changes_made": f"Dropped {len(drop_cols)} columns: {drop_cols}" if drop_cols else "No columns dropped",
         "code": cumulative_code
     }
+    
+    df = make_arrow_compatible(df_cleaned)
+    state["df"] = df
+    state["current_df"] = df
     
     return state
 
@@ -351,6 +362,10 @@ df['{col}'] = df['{col}'].fillna(df['{col}'].mean())
         "code": cumulative_code
     }
     
+    df = make_arrow_compatible(df)
+    state["df"] = df
+    state["current_df"] = df
+    
     return state
 
 def extract_code_blocks(llm_response, columns):
@@ -382,40 +397,25 @@ def remove_outliers(state: DataState) -> DataState:
     # Generate outlier analysis summary using LLM
     numeric_summary = df.describe().to_string()
     prompt = f"""
-You are a machine learning expert. Analyze the following dataset statistics and decide the best outlier detection method (Z-score or IQR) for each column.
+You are a data scientist specializing in robust preprocessing.
 
-Return a detailed explanation of:
-1. Why outliers matter.
-2. For each column:
-   - Whether it is normally distributed or skewed (decide using statistical hints)
-   - Best method to detect outliers (Z-score or IQR)
-   - Python code to visualize and clean them
-   - Whether to trim or cap based on best practice
-   - Why the method was chosen
+Instructions:
+- For each numeric column, assess the distribution (normal, skewed, multimodal, etc.).
+- Recommend the best outlier detection method (Z-score, IQR, or other) for each column, and justify your choice.
+- Provide Python code to visualize and remove outliers, using best practices.
+- Explain whether to trim or cap outliers, and why.
+- If a column should not be processed for outliers, explain why.
 
-Use this format for each column:
-python
-# Boxplot
-sns.boxplot(df['COLUMN'])
-
-# Z-score bounds
-mean = df['COLUMN'].mean()
-std = df['COLUMN'].std()
-upper_limit = mean + 3 * std
-lower_limit = mean - 3 * std
-filtered_df = df[(df['COLUMN'] >= lower_limit) & (df['COLUMN'] <= upper_limit)]
-
-or
-python
-# IQR bounds
-q1 = df['COLUMN'].quantile(0.25)
-q3 = df['COLUMN'].quantile(0.75)
-iqr = q3 - q1
-lower_limit = q1 - 1.5 * iqr
-upper_limit = q3 + 1.5 * iqr
-filtered_df = df[(df['COLUMN'] >= lower_limit) & (df['COLUMN'] <= upper_limit)]
-
-Explain whether the outliers are to be removed (trimmed) or capped and why.
+Format your answer as:
+COLUMN_NAME:
+- Distribution: ...
+- Outlier method: ...
+- Python code:
+```python
+# code here
+```
+- Recommendation: (trim/cap/none)
+- Reason: ...
 
 === NUMERIC SUMMARY ===
 {numeric_summary}
@@ -510,57 +510,127 @@ Explain whether the outliers are to be removed (trimmed) or capped and why.
         "changes_made": "; ".join(changes_made) if changes_made else "No outliers removed",
         "code": cumulative_code
     }
+    
+    df = make_arrow_compatible(cleaned_df)
+    state["df"] = df
+    state["current_df"] = df
+    
     return state
 
 # ➅ Encode Categoricals Node
 def encode_categoricals(state: DataState) -> DataState:
     """Encode categorical variables using LLM-suggested code if possible."""
-    df = state["current_df"].copy()
+    df = state["cleaned_df"].copy()
+    report = state.get("report", "")
+    llm = get_llm()
+    changes_made = []  # Always defined
     cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if not cat_cols:
+        report += "\n✅ No categorical columns found.\n"
+        state["df"] = df
+        state["current_df"] = df
+        state["code"] = ""
+        state["code_file"] = None
+        state["step_results"]["categorical_encoding"] = {
+            "df": df.copy(),
+            "summary": report,
+            "step_name": "Categorical Encoding",
+            "encoded_columns": [],
+            "changes_made": "No categorical columns to encode"
+        }
+        return state
+    sample = df[cat_cols].head(10).to_string()
+    prompt = f"""
+You are a machine learning preprocessing expert.
+
+Instructions:
+- For each categorical column, classify it as binary, nominal, or ordinal.
+- Recommend the best encoding method (Label, One-Hot, Ordinal, Frequency, Hash, Target, etc.) for each column, and justify your choice.
+- If a column has high cardinality, suggest a scalable encoding.
+- Provide Python code for each transformation.
+- If a column should not be encoded, explain why.
+
+Format your answer as:
+COLUMN_NAME:
+- Type: (binary/nominal/ordinal)
+- Encoding: (method)
+- Reason: ...
+- Python code:
+```python
+# code here
+```
+
+=== SAMPLE DATA ===
+{sample}
+"""
+    response = llm.invoke([HumanMessage(content=prompt)])
+    explanation = response.content
+    code_lines = [
+        "# Categorical Encoding",
+        "import pandas as pd",
+        "from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder",
+        "from category_encoders import BinaryEncoder, TargetEncoder",
+        "from sklearn.feature_extraction import FeatureHasher"
+    ]
+    encoded_columns = []
     changes_made = []
-    for col in cat_cols:
-        unique_vals = df[col].nunique()
-        if unique_vals == 2:
-            df[col] = LabelEncoder().fit_transform(df[col])
-            changes_made.append(f"Label encoded {col}")
-        elif unique_vals <= 10:
-            ohe = pd.get_dummies(df[col], prefix=col)
-            df = df.drop(columns=[col])
-            df = pd.concat([df, ohe], axis=1)
-            changes_made.append(f"One-hot encoded {col}")
-        elif unique_vals <= 50:
-            freq_map = df[col].value_counts(normalize=True).to_dict()
-            df[col] = df[col].map(freq_map)
-            changes_made.append(f"Frequency encoded {col}")
-        else:
-            h = FeatureHasher(n_features=4, input_type='string')
-            hashed = h.fit_transform(df[col].astype(str)).toarray()
-            hashed_df = pd.DataFrame(hashed, columns=[f"{col}_hash_{i}" for i in range(hashed.shape[1])])
-            df = df.drop(columns=[col])
-            df = pd.concat([df, hashed_df], axis=1)
-            changes_made.append(f"Hash encoded {col}")
+
+    try:
+        # Try to extract code blocks for each column (if present)
+        code_blocks = extract_code_blocks(explanation, cat_cols)
+        for col in cat_cols:
+            code = code_blocks.get(col)
+            if code:
+                # Try to exec the code block (advanced: use a safe exec environment)
+                local_vars = {'df': df.copy(), 'LabelEncoder': LabelEncoder, 'pd': pd, 'FeatureHasher': FeatureHasher}
+                try:
+                    exec(code, globals(), local_vars)
+                    if 'df' in local_vars:
+                        df = local_vars['df']
+                    encoded_columns.append(f"{col} (LLM Encoded)")
+                    changes_made.append(f"LLM encoded {col}")
+                except Exception:
+                    # Fallback to your own logic
+                    raise
+            else:
+                raise Exception("No code block found")
+    except Exception:
+        # Fallback: use your own encoding logic
+        for col in cat_cols:
+            unique_vals = df[col].nunique()
+            if unique_vals == 2:
+                df[col] = LabelEncoder().fit_transform(df[col])
+                encoded_columns.append(f"{col} (Label Encoded)")
+                changes_made.append(f"Label encoded {col}")
+            elif unique_vals <= 10:
+                ohe = pd.get_dummies(df[col], prefix=col)
+                df = df.drop(columns=[col])
+                df = pd.concat([df, ohe], axis=1)
+                encoded_columns.append(f"{col} (One-Hot Encoded)")
+                changes_made.append(f"One-hot encoded {col}")
+            elif unique_vals <= 50:
+                freq_map = df[col].value_counts(normalize=True).to_dict()
+                df[col] = df[col].map(freq_map)
+                encoded_columns.append(f"{col} (Frequency Encoded)")
+                changes_made.append(f"Frequency encoded {col}")
+            else:
+                h = FeatureHasher(n_features=4, input_type='string')
+                hashed = h.fit_transform([[val] for val in df[col].astype(str)]).toarray()
+                hashed_df = pd.DataFrame(hashed, columns=[f"{col}_hash_{i}" for i in range(hashed.shape[1])])
+                df = df.drop(columns=[col])
+                df = pd.concat([df, hashed_df], axis=1)
+                encoded_columns.append(f"{col} (Hash Encoded)")
+                changes_made.append(f"Hash encoded {col}")
 
     # Arrow compatibility fix
-    for col in df.columns:
-        if pd.api.types.is_integer_dtype(df[col]):
-            if df[col].isnull().any():
-                df[col] = df[col].astype('float64')
-            else:
-                df[col] = df[col].astype('int64')
-        elif pd.api.types.is_float_dtype(df[col]):
-            df[col] = df[col].astype('float64')
-        elif pd.api.types.is_bool_dtype(df[col]):
-            df[col] = df[col].astype(bool)
-        else:
-            df[col] = df[col].astype(str)
-
+    df = make_arrow_compatible(df)
     state["df"] = df
     state["current_df"] = df
     state["step_results"]["categorical_encoding"] = {
         "df": df.copy(),
-        "summary": f"✅ Encoded columns: {cat_cols}",
+        "summary": f"🧠 LLM Analysis:\n{explanation}\n\n✅ Encoded columns: {encoded_columns}",
         "step_name": "Categorical Encoding",
-        "encoded_columns": cat_cols,
+        "encoded_columns": encoded_columns,
         "changes_made": "; ".join(changes_made) if changes_made else "No categorical columns encoded"
     }
     return state
@@ -636,7 +706,7 @@ def display_step_results(step_key, step_data, step_number):
             
             # Display dataframe preview
             with st.expander(f"👀 Data Preview ({step_data['df'].shape[0]} rows × {step_data['df'].shape[1]} cols)", expanded=False):
-                st.dataframe(step_data['df'].head(10), use_container_width=True)
+                st.dataframe(make_arrow_compatible(step_data['df']), use_container_width=True)
                 
                 # Show data info
                 info_col1, info_col2, info_col3 = st.columns(3)
@@ -913,7 +983,7 @@ def main():
                     # Final processed dataset
                     st.markdown("### 🎉 Final Processed Dataset")
                     with st.expander("👀 Preview Final Dataset", expanded=True):
-                        st.dataframe(final_df.head(10), use_container_width=True)
+                        st.dataframe(make_arrow_compatible(final_df), use_container_width=True)
                         
                         # Data quality metrics
                         col1, col2, col3 = st.columns(3)
