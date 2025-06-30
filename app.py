@@ -38,6 +38,8 @@ class DataState(TypedDict):
     code_file: BytesIO
     # Enhanced state tracking for step-by-step results
     step_results: dict
+    current_df: pd.DataFrame  # Always contains the most current version
+    code_accumulator: list   # Accumulate code for each step
 
 # Helper function to create downloadable CSV
 def create_csv_download(df, filename):
@@ -45,6 +47,12 @@ def create_csv_download(df, filename):
     df.to_csv(csv_buffer, index=False)
     csv_buffer.seek(0)
     return csv_buffer.getvalue(), filename
+
+# Helper function to create downloadable code
+def create_code_download(code_str, filename):
+    code_buffer = BytesIO(code_str.encode())
+    code_buffer.seek(0)
+    return code_buffer.getvalue(), filename
 
 # ➀ Problem Definition Node
 def define_problem(state: DataState) -> DataState:
@@ -86,6 +94,14 @@ Return your output in this Python dictionary format:
     state["problem_summary"] = summary
     state["target_column"] = target_column
     
+    state["current_df"] = df  # Update current dataframe
+    # NEW: Add code for this step
+    code = """# Problem Definition\n# (No transformation applied in this step)\n"""
+    if "code_accumulator" not in state:
+        state["code_accumulator"] = []
+    state["code_accumulator"].append(code)
+    cumulative_code = "\n".join(state["code_accumulator"])
+    
     # Store step result
     if "step_results" not in state:
         state["step_results"] = {}
@@ -93,7 +109,9 @@ Return your output in this Python dictionary format:
         "df": df.copy(),
         "summary": summary,
         "target_column": target_column,
-        "step_name": "Problem Definition"
+        "step_name": "Problem Definition",
+        "changes_made": "Initial data loaded and analyzed",
+        "code": cumulative_code
     }
     
     return state
@@ -127,6 +145,12 @@ cat_unique = df[cat_col].nunique()
     
     state["inspection_summary"] = summary
     
+    state["current_df"] = df  # Update current dataframe
+    # NEW: Add code for this step
+    code = """# Data Inspection\nduplicated = df.duplicated().sum()\ncat_col = [col for col in df.columns if df[col].dtype == 'object']\nnum_col = [col for col in df.columns if df[col].dtype != 'object']\ncat_unique = df[cat_col].nunique()\n"""
+    state["code_accumulator"].append(code)
+    cumulative_code = "\n".join(state["code_accumulator"])
+    
     # Store step result
     state["step_results"]["data_inspection"] = {
         "df": df.copy(),
@@ -134,7 +158,9 @@ cat_unique = df[cat_col].nunique()
         "step_name": "Data Inspection",
         "duplicated": duplicated,
         "categorical_cols": cat_col,
-        "numerical_cols": num_col
+        "numerical_cols": num_col,
+        "changes_made": "Data structure analyzed - no changes to data",
+        "code": cumulative_code
     }
     
     return state
@@ -209,8 +235,14 @@ df_cleaned = df.drop(columns={drop_cols}, errors='ignore')
         explanation += f"- `{col}`: {reason}\n"
     
     state["df_cleaned"] = df_cleaned
+    state["current_df"] = df_cleaned  # Update current dataframe
     state["dropped_columns"] = drop_cols
     state["inspection_summary"] = state["inspection_summary"] + "\n\n" + explanation
+    
+    # NEW: Add code for this step
+    code = f"""# Column Cleaning\ndf = df.drop(columns={drop_cols}, errors='ignore')\n"""
+    state["code_accumulator"].append(code)
+    cumulative_code = "\n".join(state["code_accumulator"])
     
     # Store step result
     state["step_results"]["column_cleaning"] = {
@@ -219,7 +251,9 @@ df_cleaned = df.drop(columns={drop_cols}, errors='ignore')
         "step_name": "Column Cleaning",
         "dropped_columns": drop_cols,
         "drop_reasons": drop_reasons,
-        "keep_reasons": keep_reasons
+        "keep_reasons": keep_reasons,
+        "changes_made": f"Dropped {len(drop_cols)} columns: {drop_cols}" if drop_cols else "No columns dropped",
+        "code": cumulative_code
     }
     
     return state
@@ -247,11 +281,13 @@ missing_percent = round((df.isnull().sum()/df.shape[0]) * 100, 2)
         explanation += "✅ No missing values found in dataset.\n"
 
     dropped = []
+    changes_made = []
     for col, percent in null_percent.items():
         if percent > 50:
             df.drop(columns=[col], inplace=True)
             dropped.append(col)
             explanation += f"\n🗑️ Dropped `{col}` due to {percent}% missing values."
+            changes_made.append(f"Dropped {col} ({percent}% missing)")
         elif percent > 0 and df[col].dtype != 'object':
             skewness = df[col].skew()
             if abs(skewness) > 1:
@@ -263,6 +299,7 @@ missing_percent = round((df.isnull().sum()/df.shape[0]) * 100, 2)
 df['{col}'] = df['{col}'].fillna(df['{col}'].median())
 ```
 """
+                changes_made.append(f"Imputed {col} with median")
             else:
                 df[col] = df[col].fillna(df[col].mean())
                 explanation += f"""
@@ -272,12 +309,36 @@ df['{col}'] = df['{col}'].fillna(df['{col}'].median())
 df['{col}'] = df['{col}'].fillna(df['{col}'].mean())
 ```
 """
+                changes_made.append(f"Imputed {col} with mean")
+        elif percent > 0 and df[col].dtype == 'object':
+            mode_value = df[col].mode()[0] if not df[col].mode().empty else 'Unknown'
+            df[col] = df[col].fillna(mode_value)
+            changes_made.append(f"Imputed {col} with mode ({mode_value})")
+            explanation += f"\n📝 Imputed `{col}` using **mode** ({mode_value})."
 
     state["df_cleaned"] = df
+    state["current_df"] = df  # Update current dataframe
     if "dropped_columns" not in state:
         state["dropped_columns"] = []
     state["dropped_columns"].extend(dropped)
     state["inspection_summary"] += "\n\n" + explanation
+    
+    # NEW: Add code for this step
+    code_lines = ["# Missing Data Handling"]
+    for col, percent in null_percent.items():
+        if percent > 50:
+            code_lines.append(f"df = df.drop(columns=['{col}'])  # Dropped due to >50% missing")
+        elif percent > 0 and df[col].dtype != 'object':
+            skewness = df[col].skew()
+            if abs(skewness) > 1:
+                code_lines.append(f"df['{col}'] = df['{col}'].fillna(df['{col}'].median())  # Imputed median (skewed)")
+            else:
+                code_lines.append(f"df['{col}'] = df['{col}'].fillna(df['{col}'].mean())  # Imputed mean (normal)")
+        elif percent > 0 and df[col].dtype == 'object':
+            code_lines.append(f"df['{col}'] = df['{col}'].fillna(df['{col}'].mode()[0])  # Imputed mode")
+    code = "\n".join(code_lines)
+    state["code_accumulator"].append(code)
+    cumulative_code = "\n".join(state["code_accumulator"])
     
     # Store step result
     state["step_results"]["missing_data"] = {
@@ -285,7 +346,9 @@ df['{col}'] = df['{col}'].fillna(df['{col}'].mean())
         "summary": explanation,
         "step_name": "Missing Data Handling",
         "missing_report": missing_report.to_dict(),
-        "dropped_columns": dropped
+        "dropped_columns": dropped,
+        "changes_made": "; ".join(changes_made) if changes_made else "No missing values to handle",
+        "code": cumulative_code
     }
     
     return state
@@ -313,6 +376,7 @@ def extract_code_blocks(llm_response, columns):
 def remove_outliers(state: DataState) -> DataState:
     """Remove outliers from numerical columns using LLM-suggested code if possible."""
     df = state["df_cleaned"]
+    changes_made = []
     llm = get_llm()
 
     # Generate outlier analysis summary using LLM
@@ -421,165 +485,102 @@ Explain whether the outliers are to be removed (trimmed) or capped and why.
         boxplots[col] = buffer.read()
         plt.close(fig)
 
+    state["current_df"] = cleaned_df  # Update current dataframe
     state["cleaned_df"] = cleaned_df
     state["boxplots"] = boxplots
+    
+    # NEW: Add code for this step
+    code_lines = ["# Outlier Removal"]
+    for col in numeric_cols:
+        if abs(df[col].skew()) > 1:
+            code_lines.append(f"# {col} (IQR)\nq1 = df['{col}'].quantile(0.25)\nq3 = df['{col}'].quantile(0.75)\niqr = q3 - q1\nlower_limit = q1 - 1.5 * iqr\nupper_limit = q3 + 1.5 * iqr\ndf = df[(df['{col}'] >= lower_limit) & (df['{col}'] <= upper_limit)]")
+        else:
+            code_lines.append(f"# {col} (Z-score)\nmean = df['{col}'].mean()\nstd = df['{col}'].std()\nlower_limit = mean - 3 * std\nupper_limit = mean + 3 * std\ndf = df[(df['{col}'] >= lower_limit) & (df['{col}'] <= upper_limit)]")
+    code = "\n".join(code_lines)
+    state["code_accumulator"].append(code)
+    cumulative_code = "\n".join(state["code_accumulator"])
+    
+    # Store step result
     state["step_results"]["outlier_removal"] = {
         "df": cleaned_df.copy(),
         "summary": response.content,
         "step_name": "Outlier Removal",
         "boxplots": boxplots,
-        "numeric_cols": list(numeric_cols)
+        "numeric_cols": list(numeric_cols),
+        "changes_made": "; ".join(changes_made) if changes_made else "No outliers removed",
+        "code": cumulative_code
     }
     return state
 
 # ➅ Encode Categoricals Node
 def encode_categoricals(state: DataState) -> DataState:
     """Encode categorical variables using LLM-suggested code if possible."""
-    df = state["cleaned_df"].copy()
-    report = state.get("report", "")
-    llm = get_llm()
+    df = state["current_df"].copy()
     cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    if not cat_cols:
-        report += "\n✅ No categorical columns found.\n"
-        state["df"] = df
-        state["report"] = report
-        state["code"] = ""
-        state["code_file"] = None
-        state["step_results"]["categorical_encoding"] = {
-            "df": df.copy(),
-            "summary": report,
-            "step_name": "Categorical Encoding",
-            "encoded_columns": []
-        }
-        return state
-    sample = df[cat_cols].head(10).to_string()
-    prompt = f"""
-You are a machine learning data preprocessing expert.
-Analyze each categorical column below and choose the best encoding method from:
-Label Encoding, One-Hot Encoding, Ordinal Encoding, Frequency Encoding, Binary Encoding, Hashing Encoding, Target Encoding.
-As we all know that better encoding leads to a better model and most algorithms cannot handle the categorical variables unless they are converted into a numerical value.
-
-Categorical features are generally divided into 3 types: 
-
-A. Binary: Either/or 
-Examples: 
-
-Yes, No
-True, False
-B. Ordinal: Specific ordered Groups. 
-Examples: 
-
-low, medium, high
-cold, hot, lava Hot
-C. Nominal: Unordered Groups. Examples 
-
-cat, dog, tiger
-pizza, burger, coke
-
-Explain the type (Binary, Ordinal, Nominal), encoding method, and why it's chosen. Output the Python code for each transformation.
-i want you analyze it deeply and  choose the correct encoding 
-
-=== SAMPLE DATA ===
-{sample}
-"""
-    response = llm.invoke([HumanMessage(content=prompt)])
-    explanation = response.content
-    code_lines = [
-        "# Automatically generated encoding code\n",
-        "import pandas as pd",
-        "from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder",
-        "from category_encoders import BinaryEncoder, TargetEncoder",
-        "from sklearn.feature_extraction import FeatureHasher",
-    ]
-    encoded_columns = []
-    code_blocks = extract_code_blocks(explanation, cat_cols)
+    changes_made = []
     for col in cat_cols:
-        code = code_blocks.get(col)
-        try:
-            if code:
-                local_vars = {'df': df.copy(), 'LabelEncoder': LabelEncoder, 'OrdinalEncoder': OrdinalEncoder, 'OneHotEncoder': OneHotEncoder, 'BinaryEncoder': BinaryEncoder, 'TargetEncoder': TargetEncoder, 'FeatureHasher': FeatureHasher, 'pd': pd}
-                exec(code, globals(), local_vars)
-                if 'df' in local_vars:
-                    df = local_vars['df']
-                encoded_columns.append(f"{col} (LLM Encoded)")
-                code_lines.append(code)
+        unique_vals = df[col].nunique()
+        if unique_vals == 2:
+            df[col] = LabelEncoder().fit_transform(df[col])
+            changes_made.append(f"Label encoded {col}")
+        elif unique_vals <= 10:
+            ohe = pd.get_dummies(df[col], prefix=col)
+            df = df.drop(columns=[col])
+            df = pd.concat([df, ohe], axis=1)
+            changes_made.append(f"One-hot encoded {col}")
+        elif unique_vals <= 50:
+            freq_map = df[col].value_counts(normalize=True).to_dict()
+            df[col] = df[col].map(freq_map)
+            changes_made.append(f"Frequency encoded {col}")
+        else:
+            h = FeatureHasher(n_features=4, input_type='string')
+            hashed = h.fit_transform(df[col].astype(str)).toarray()
+            hashed_df = pd.DataFrame(hashed, columns=[f"{col}_hash_{i}" for i in range(hashed.shape[1])])
+            df = df.drop(columns=[col])
+            df = pd.concat([df, hashed_df], axis=1)
+            changes_made.append(f"Hash encoded {col}")
+
+    # Arrow compatibility fix
+    for col in df.columns:
+        if pd.api.types.is_integer_dtype(df[col]):
+            if df[col].isnull().any():
+                df[col] = df[col].astype('float64')
             else:
-                # Fallback to your logic
-                unique_vals = df[col].nunique()
-                if unique_vals == 2:
-                    le = LabelEncoder()
-                    df[col] = le.fit_transform(df[col])
-                    report += f"\n✅ Label Encoded (Binary) '{col}'"
-                    code_lines.append(f"df['{col}'] = LabelEncoder().fit_transform(df['{col}'])")
-                    encoded_columns.append(f"{col} (Label Encoded)")
-                elif unique_vals <= 10:
-                    ohe = pd.get_dummies(df[col], prefix=col)
-                    df.drop(columns=[col], inplace=True)
-                    df = pd.concat([df, ohe], axis=1)
-                    report += f"\n✅ One-Hot Encoded '{col}'"
-                    code_lines.append(f"df = pd.concat([df, pd.get_dummies(df['{col}'], prefix='{col}')], axis=1); df.drop(columns=['{col}'], inplace=True)")
-                    encoded_columns.append(f"{col} (One-Hot Encoded)")
-                elif unique_vals <= 50:
-                    freq_map = df[col].value_counts(normalize=True).to_dict()
-                    df[col] = df[col].map(freq_map)
-                    report += f"\n✅ Frequency Encoded '{col}'"
-                    code_lines.append(f"df['{col}'] = df['{col}'].map(df['{col}'].value_counts(normalize=True).to_dict())")
-                    encoded_columns.append(f"{col} (Frequency Encoded)")
-                else:
-                    h = FeatureHasher(n_features=4, input_type='string')
-                    hashed = h.fit_transform(df[col].astype(str)).toarray()
-                    hashed_df = pd.DataFrame(hashed, columns=[f"{col}_hash_{i}" for i in range(hashed.shape[1])])
-                    df.drop(columns=[col], inplace=True)
-                    df = pd.concat([df, hashed_df], axis=1)
-                    report += f"\n✅ Hash Encoded '{col}'"
-                    code_lines.append(f"# Hash Encoding for '{col}'\nfrom sklearn.feature_extraction import FeatureHasher\nh = FeatureHasher(n_features=4, input_type='string')\nhashed = h.fit_transform(df['{col}'].astype(str)).toarray()\nhashed_df = pd.DataFrame(hashed, columns=[f'{col}_hash_' + str(i) for i in range(hashed.shape[1])])\ndf.drop(columns=['{col}'], inplace=True)\ndf = pd.concat([df, hashed_df], axis=1)")
-                    encoded_columns.append(f"{col} (Hash Encoded)")
-        except Exception as e:
-            # Fallback to your logic if LLM code fails
-            unique_vals = df[col].nunique()
-            if unique_vals == 2:
-                le = LabelEncoder()
-                df[col] = le.fit_transform(df[col])
-                report += f"\n✅ Label Encoded (Binary) '{col}'"
-                code_lines.append(f"df['{col}'] = LabelEncoder().fit_transform(df['{col}'])")
-                encoded_columns.append(f"{col} (Label Encoded)")
-            elif unique_vals <= 10:
-                ohe = pd.get_dummies(df[col], prefix=col)
-                df.drop(columns=[col], inplace=True)
-                df = pd.concat([df, ohe], axis=1)
-                report += f"\n✅ One-Hot Encoded '{col}'"
-                code_lines.append(f"df = pd.concat([df, pd.get_dummies(df['{col}'], prefix='{col}')], axis=1); df.drop(columns=['{col}'], inplace=True)")
-                encoded_columns.append(f"{col} (One-Hot Encoded)")
-            elif unique_vals <= 50:
-                freq_map = df[col].value_counts(normalize=True).to_dict()
-                df[col] = df[col].map(freq_map)
-                report += f"\n✅ Frequency Encoded '{col}'"
-                code_lines.append(f"df['{col}'] = df['{col}'].map(df['{col}'].value_counts(normalize=True).to_dict())")
-                encoded_columns.append(f"{col} (Frequency Encoded)")
-            else:
-                h = FeatureHasher(n_features=4, input_type='string')
-                hashed = h.fit_transform(df[col].astype(str)).toarray()
-                hashed_df = pd.DataFrame(hashed, columns=[f"{col}_hash_{i}" for i in range(hashed.shape[1])])
-                df.drop(columns=[col], inplace=True)
-                df = pd.concat([df, hashed_df], axis=1)
-                report += f"\n✅ Hash Encoded '{col}'"
-                code_lines.append(f"# Hash Encoding for '{col}'\nfrom sklearn.feature_extraction import FeatureHasher\nh = FeatureHasher(n_features=4, input_type='string')\nhashed = h.fit_transform(df['{col}'].astype(str)).toarray()\nhashed_df = pd.DataFrame(hashed, columns=[f'{col}_hash_' + str(i) for i in range(hashed.shape[1])])\ndf.drop(columns=['{col}'], inplace=True)\ndf = pd.concat([df, hashed_df], axis=1)")
-                encoded_columns.append(f"{col} (Hash Encoded)")
-    code_str = "\n".join(code_lines)
-    buffer = BytesIO(code_str.encode())
-    buffer.name = "encoding_code.py"
+                df[col] = df[col].astype('int64')
+        elif pd.api.types.is_float_dtype(df[col]):
+            df[col] = df[col].astype('float64')
+        elif pd.api.types.is_bool_dtype(df[col]):
+            df[col] = df[col].astype(bool)
+        else:
+            df[col] = df[col].astype(str)
+
     state["df"] = df
-    state["report"] = report + "\n\n🧠 LLM Analysis:\n" + explanation
-    state["code"] = code_str
-    state["code_file"] = buffer
+    state["current_df"] = df
     state["step_results"]["categorical_encoding"] = {
         "df": df.copy(),
-        "summary": report + "\n\n🧠 LLM Analysis:\n" + explanation,
+        "summary": f"✅ Encoded columns: {cat_cols}",
         "step_name": "Categorical Encoding",
-        "encoded_columns": encoded_columns,
-        "code": code_str
+        "encoded_columns": cat_cols,
+        "changes_made": "; ".join(changes_made) if changes_made else "No categorical columns encoded"
     }
     return state
+
+def make_arrow_compatible(df):
+    # Convert all columns to standard numpy types or string
+    for col in df.columns:
+        # If it's a pandas nullable integer, force to numpy int64 (or float if NA present)
+        if pd.api.types.is_integer_dtype(df[col]):
+            if df[col].isnull().any():
+                df[col] = df[col].astype('float64')
+            else:
+                df[col] = df[col].astype('int64')
+        elif pd.api.types.is_float_dtype(df[col]):
+            df[col] = df[col].astype('float64')
+        elif pd.api.types.is_bool_dtype(df[col]):
+            df[col] = df[col].astype(bool)
+        else:
+            df[col] = df[col].astype(str)
+    return df
 
 # Build the LangGraph
 def create_preprocessing_graph():
@@ -627,14 +628,15 @@ def display_step_results(step_key, step_data, step_number):
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            # Display summary
+            if 'changes_made' in step_data:
+                st.info(f"**Changes Made:** {step_data['changes_made']}")
             if 'summary' in step_data:
                 with st.expander(f"📋 {step_data['step_name']} Details", expanded=False):
                     st.markdown(step_data['summary'])
             
             # Display dataframe preview
             with st.expander(f"👀 Data Preview ({step_data['df'].shape[0]} rows × {step_data['df'].shape[1]} cols)", expanded=False):
-                st.dataframe(step_data['df'].head(10))
+                st.dataframe(step_data['df'].head(10), use_container_width=True)
                 
                 # Show data info
                 info_col1, info_col2, info_col3 = st.columns(3)
@@ -646,7 +648,7 @@ def display_step_results(step_key, step_data, step_number):
                     st.metric("Memory Usage", f"{step_data['df'].memory_usage(deep=True).sum() / 1024:.1f} KB")
         
         with col2:
-            # Download button
+            # Download button for CSV
             csv_data, filename = create_csv_download(step_data['df'], f"step_{step_number}_{step_key}.csv")
             st.download_button(
                 label=f"📥 Download CSV",
@@ -654,8 +656,21 @@ def display_step_results(step_key, step_data, step_number):
                 file_name=filename,
                 mime="text/csv",
                 key=f"download_{step_key}_{step_number}",
-                help=f"Download data after {step_data['step_name']}"
+                help=f"Download data after {step_data['step_name']}",
+                use_container_width=True
             )
+            # NEW: Download button for code
+            if 'code' in step_data:
+                code_data = step_data['code'].encode() if isinstance(step_data['code'], str) else step_data['code']
+                st.download_button(
+                    label=f"💻 Download Code",
+                    data=code_data,
+                    file_name=f"step_{step_number}_{step_key}.py",
+                    mime="text/x-python",
+                    key=f"download_code_{step_key}_{step_number}",
+                    help=f"Download code up to {step_data['step_name']}",
+                    use_container_width=True
+                )
             
             # Display specific metrics for each step
             if step_key == "data_inspection":
@@ -818,7 +833,8 @@ def main():
                         report="",
                         code="",
                         code_file=None,
-                        step_results={}
+                        step_results={},
+                        code_accumulator=[]
                     )
                     
                     # Create and run graph
