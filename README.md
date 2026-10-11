@@ -112,3 +112,6 @@ PrepLab/
         ├── minmax_scaling.py
         ├── robust_scaling.py
         └── standard_scaling.py
+
+<img width="595" height="674" alt="image" src="https://github.com/user-attachments/assets/134e7b26-8206-4a64-9a6e-078e44f6eb3d" />
+
