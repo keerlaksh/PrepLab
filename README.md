@@ -114,3 +114,5 @@ PrepLab/
         └── standard_scaling.py
 
 <img width="595" height="674" alt="image" src="https://github.com/user-attachments/assets/56928646-5ab9-4a9e-80b6-e3a4b0703e9d" />
+<img width="1024" height="1536" alt="PrepLab Data Preprocessing Pipeline" src="https://github.com/user-attachments/assets/82d130b8-adee-442a-af69-5cab5ec4cd9d" />
+
