@@ -75,44 +75,9 @@ The scaling workflow excludes the selected target column and Boolean columns. Th
 ## Project Structure
 
 
-PrepLab/
-├── .gitignore
-└── tools/
-    ├── app.py
-    ├── clean_columns.py
-    ├── inspect_data.py
-    ├── problem_definition.py
-    ├── flowchart.py                 # Standalone/legacy chart; not imported by app.py
-    ├── agent/
-    │   ├── __init__.py
-    │   ├── agentic.py               # LLM router and Agent graph
-    │   ├── graph.py                 # LangGraph workflow definition
-    │   ├── nodes.py                 # Processing-node implementations
-    │   └── state.py                 # Shared LangGraph state schema
-    ├── data_quality/
-    │   ├── duplicate_handling.py
-    │   └── type_correction.py
-    ├── encoding/
-    │   ├── frequency_encoding.py
-    │   ├── one_hot_encoding.py
-    │   └── ordinal_encoding.py
-    ├── imputation/
-    │   ├── check_skewness.py
-    │   ├── check_symmetry.py
-    │   ├── mean_imputation.py
-    │   ├── median_imputation.py
-    │   └── mode_imputation.py
-    ├── outliers/
-    │   ├── check_bell_shaped.py
-    │   ├── detect_outliers.py
-    │   ├── iqr_strategy.py
-    │   ├── outlier_capping.py
-    │   └── zscore_strategy.py
-    └── scaling/
-        ├── minmax_scaling.py
-        ├── robust_scaling.py
-        └── standard_scaling.py
+<img width="484" height="567" alt="image" src="https://github.com/user-attachments/assets/a7f8144d-9d5a-48f9-8133-953d125c0e59" />
 
-<img width="595" height="674" alt="image" src="https://github.com/user-attachments/assets/56928646-5ab9-4a9e-80b6-e3a4b0703e9d" />
+
+
 <img width="1024" height="1536" alt="PrepLab Data Preprocessing Pipeline" src="https://github.com/user-attachments/assets/82d130b8-adee-442a-af69-5cab5ec4cd9d" />
 
